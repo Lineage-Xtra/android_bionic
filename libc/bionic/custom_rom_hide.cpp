@@ -107,6 +107,22 @@ static bool is_app_process() {
     return (getuid() % AID_USER_OFFSET) >= AID_APP_START;
 }
 
+static bool is_updater_process() {
+    char cmdline[256];
+    int fd = raw_openat("/proc/self/cmdline", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t len = raw_read(fd, cmdline, sizeof(cmdline) - 1);
+        raw_close(fd);
+        if (len > 0) {
+            cmdline[len] = '\0';
+            if (strcmp(cmdline, "org.lineageos.updater") == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static const char* path_basename(const char* path) {
     const char* slash = strrchr(path, '/');
     return slash ? slash + 1 : path;
@@ -163,13 +179,13 @@ static bool resolve_fd_path(int fd, char* buf, size_t size) {
 bool custom_rom_hide_should_block(const char* path) {
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return false;
     if (path[0] != '/') return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || is_updater_process()) return false;
     return is_rom_path(path);
 }
 
 bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || is_updater_process()) return false;
 
     int saved_errno = errno;
     bool result = false;
@@ -191,7 +207,7 @@ bool custom_rom_hide_should_block_at(int dirfd, const char* path) {
 
 bool custom_rom_hide_should_filter_dirent(int dirfd, const char* name) {
     if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || is_updater_process()) return false;
 
     int saved_errno = errno;
     bool result = false;
@@ -222,7 +238,7 @@ static int create_encoded_memfd(const char* path) {
 }
 
 ssize_t custom_rom_hide_readlink_post(char* buf, size_t size, ssize_t ret) {
-    if (ret <= 0 || !is_app_process()) return ret;
+    if (ret <= 0 || !is_app_process() || is_updater_process()) return ret;
 
     const char* prefix = "/memfd:axion:";
     size_t prefix_len = 13;
@@ -367,7 +383,7 @@ static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len) {
 }
 
 int custom_rom_hide_filter_proc(const char* path) {
-    if (!is_app_process()) return -1;
+    if (!is_app_process() || is_updater_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
 
     int saved_errno = errno;
@@ -419,7 +435,7 @@ static const char* const kSepolicyFilterPaths[] = {
 };
 
 int custom_rom_hide_filter_sepolicy(const char* path) {
-    if (!is_app_process()) return -1;
+    if (!is_app_process() || is_updater_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
 
     int saved_errno = errno;
@@ -468,7 +484,7 @@ static const char* const kVintfFilterKeywords[] = {
 };
 
 int custom_rom_hide_filter_vintf(const char* path) {
-    if (!is_app_process()) return -1;
+    if (!is_app_process() || is_updater_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
 
     int saved_errno = errno;
@@ -533,7 +549,7 @@ bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
     if (!name || !value) return false;
     if (reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
     if (reinterpret_cast<uintptr_t>(value) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || is_updater_process()) return false;
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) { value[0] = '\0'; return true; }
     }
@@ -545,7 +561,7 @@ bool custom_rom_hide_should_spoof_prop(const char* name, char* value) {
 
 bool custom_rom_hide_should_hide_prop(const char* name) {
     if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return false;
-    if (!is_app_process()) return false;
+    if (!is_app_process() || is_updater_process()) return false;
     for (const char* const* p = kSpoofedEmptyProps; *p; ++p) {
         if (strcmp(name, *p) == 0) return true;
     }
@@ -554,7 +570,7 @@ bool custom_rom_hide_should_hide_prop(const char* name) {
 
 const char* custom_rom_hide_get_prop_override(const char* name) {
     if (!name || reinterpret_cast<uintptr_t>(name) < 0x1000000) return nullptr;
-    if (!is_app_process()) return nullptr;
+    if (!is_app_process() || is_updater_process()) return nullptr;
     for (const PropOverride* o = kSpoofedValueProps; o->name; ++o) {
         if (strcmp(name, o->name) == 0) return o->value;
     }
@@ -562,7 +578,7 @@ const char* custom_rom_hide_get_prop_override(const char* name) {
 }
 
 bool custom_rom_hide_is_app_process() {
-    return is_app_process();
+    return is_app_process() && !is_updater_process();
 }
 
 static const PartitionDevEntry* find_partition_entry(const char* path) {
@@ -574,14 +590,14 @@ static const PartitionDevEntry* find_partition_entry(const char* path) {
 }
 
 void custom_rom_hide_spoof_stat(const char* path, struct stat* sb) {
-    if (!is_app_process() || !path || !sb) return;
+    if (!is_app_process() || is_updater_process() || !path || !sb) return;
     if (strcmp(path, "/data/local/tmp") == 0) { sb->st_ino = 4223; return; }
     const PartitionDevEntry* e = find_partition_entry(path);
     if (e && major(sb->st_dev) != DM_MAJOR) sb->st_dev = makedev(DM_MAJOR, e->dm_minor);
 }
 
 void custom_rom_hide_spoof_statx(const char* path, struct statx* sx) {
-    if (!is_app_process() || !path || !sx) return;
+    if (!is_app_process() || is_updater_process() || !path || !sx) return;
     const PartitionDevEntry* e = find_partition_entry(path);
     if (e && sx->stx_dev_major != DM_MAJOR) {
         sx->stx_dev_major = DM_MAJOR;
